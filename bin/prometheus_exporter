@@ -6,18 +6,16 @@ require_relative "./../lib/prometheus_exporter"
 require_relative "./../lib/prometheus_exporter/server"
 
 def run
-  options = {}
+  options = {
+    Port: PrometheusExporter::DEFAULT_PORT
+  }
   custom_collector_filename = nil
   custom_type_collectors_filenames = []
 
   OptionParser.new do |opt|
     opt.banner = "Usage: prometheus_exporter [options]"
-    opt.on('-p',
-           '--port INTEGER',
-           Integer,
-           "Port exporter should listen on (default: #{PrometheusExporter::DEFAULT_PORT})") do |o|
-      options[:port] = o.to_i
-    end
+    opt.separator ""
+    opt.separator "prometheus_exporter options:"
     opt.on('-t',
            '--timeout INTEGER',
            Integer,
@@ -37,6 +35,32 @@ def run
       options[:verbose] = true
     end
 
+    opt.separator ""
+    opt.separator "Rack options:"
+
+    opt.on("-s", "--server SERVER", "serve using SERVER (thin/puma/webrick)") { |s|
+      options[:server] = s
+    }
+
+    opt.on("-o", "--host HOST", "listen on HOST (default: localhost)") { |host|
+      options[:Host] = host
+    }
+
+    opt.on("-p", "--port PORT", "use PORT (default: 9394)") { |port|
+      options[:Port] = port
+    }
+
+    opt.on("-E", "--env ENVIRONMENT", "use ENVIRONMENT for defaults (default: development)") { |e|
+      options[:environment] = e
+    }
+
+    opt.on("-D", "--daemonize", "run daemonized in the background") { |d|
+      options[:daemonize] = d ? true : false
+    }
+
+    opt.on("-P", "--pid FILE", "file to store PID") { |f|
+      options[:pid] = ::File.expand_path(f)
+    }
   end.parse!
 
   if custom_collector_filename
@@ -71,11 +95,10 @@ def run
     end
   end
 
-  runner = PrometheusExporter::Server::Runner.new(options)
+  puts "#{Time.now} Starting prometheus exporter"
 
-  puts "#{Time.now} Starting prometheus exporter on port #{runner.port}"
-  runner.start
-  sleep
+  app = PrometheusExporter::Server::Runner.new(options)
+  Rack::Server.start(options.merge(app: app))
 end
 
 run

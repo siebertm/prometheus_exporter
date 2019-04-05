@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require 'webrick'
+require 'rack'
 require 'timeout'
 require 'zlib'
 require 'stringio'
@@ -9,10 +9,7 @@ module PrometheusExporter::Server
   class WebServer
     attr_reader :collector
 
-    def initialize(port: , collector: nil, timeout: PrometheusExporter::DEFAULT_TIMEOUT, verbose: false)
-
-      @verbose = verbose
-
+    def initialize(collector: nil, timeout: PrometheusExporter::DEFAULT_TIMEOUT)
       @metrics_total = PrometheusExporter::Metric::Counter.new("collector_metrics_total", "Total metrics processed by exporter web.")
 
       @sessions_total = PrometheusExporter::Metric::Counter.new("collector_sessions_total", "Total send_metric sessions processed by exporter web.")
@@ -23,53 +20,35 @@ module PrometheusExporter::Server
       @sessions_total.observe(0)
       @bad_metrics_total.observe(0)
 
-      access_log, logger = nil
-
-      if verbose
-        access_log = [
-          [$stderr, WEBrick::AccessLog::COMMON_LOG_FORMAT],
-          [$stderr, WEBrick::AccessLog::REFERER_LOG_FORMAT],
-        ]
-        logger = WEBrick::Log.new($stderr)
-      else
-        access_log = []
-        logger = WEBrick::Log.new("/dev/null")
-      end
-
-      @server = WEBrick::HTTPServer.new(
-        Port: port,
-        Logger: logger,
-        AccessLog: access_log,
-      )
-
       @collector = collector || Collector.new
       @port = port
       @timeout = timeout
+    end
 
-      @server.mount_proc '/' do |req, res|
-        res['Content-Type'] = 'text/plain; charset=utf-8'
-        if req.path == '/metrics'
-          res.status = 200
-          if req.header["accept-encoding"].to_s.include?("gzip")
-            sio = StringIO.new
-            collected_metrics = metrics
-            begin
-              writer = Zlib::GzipWriter.new(sio)
-              writer.write(collected_metrics)
-            ensure
-              writer.close
-            end
-            res.body = sio.string
-            res.header["content-encoding"] = "gzip"
-          else
-            res.body = metrics
+    def call(env)
+      req = Rack::Request.new(env)
+      res = Rack::Response.new([], 200, 'Content-Type' => 'text/plain; charset=utf-8')
+
+      if req.path == '/metrics'
+        if req.header["accept-encoding"].to_s.include?("gzip")
+          sio = StringIO.new
+          collected_metrics = metrics
+          begin
+            writer = Zlib::GzipWriter.new(sio)
+            writer.write(collected_metrics)
+          ensure
+            writer.close
           end
-        elsif req.path == '/send-metrics'
-          handle_metrics(req, res)
+          res.body = [sio.string]
+          res["content-encoding"] = "gzip"
         else
-          res.status = 404
-          res.body = "Not Found! The Prometheus Ruby Exporter only listens on /metrics and /send-metrics"
+          res.body = [metrics]
         end
+      elsif req.path == '/send-metrics'
+        handle_metrics(req, res)
+      else
+        res.status = 404
+        res.body = ["Not Found! The Prometheus Ruby Exporter only listens on /metrics and /send-metrics"]
       end
     end
 
@@ -93,22 +72,8 @@ module PrometheusExporter::Server
         end
       end
 
-      res.body = "OK"
+      res.body = ["OK"]
       res.status = 200
-    end
-
-    def start
-      @runner ||= Thread.start do
-        begin
-          @server.start
-        rescue => e
-          STDERR.puts "Failed to start prometheus collector web on port #{@port}: #{e}"
-        end
-      end
-    end
-
-    def stop
-      @server.shutdown
     end
 
     def metrics
@@ -157,6 +122,5 @@ module PrometheusExporter::Server
       gauge.observe(value)
       gauge
     end
-
   end
 end
